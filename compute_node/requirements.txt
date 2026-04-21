@@ -1,0 +1,14 @@
+celery
+redis
+torch
+transformers
+peft
+bitsandbytes
+autoawq
+auto-gptq
+lm-eval
+vllm
+mlflow
+minio
+accelerate
+datasets
