@@ -129,6 +129,25 @@ check $([[ "$JOB_COUNT" -ge 1 ]] && echo 0 || echo 1) "MongoDB has job records (
 
 echo ""
 
+# --- Cleanup Test Data ---
+echo "--- Cleanup ---"
+
+if [[ -n "$DATASET_ID" ]]; then
+  # Remove test object from MinIO
+  docker exec llm-refinery-minio mc alias set local http://localhost:9000 minioadmin minioadmin > /dev/null 2>&1
+  docker exec llm-refinery-minio mc rm "local/datasets/${DATASET_ID}.jsonl" > /dev/null 2>&1
+
+  # Remove test records from MongoDB
+  docker exec llm-refinery-mongodb mongosh --quiet --eval "
+    db.getSiblingDB('llm_refinery').datasets.deleteMany({dataset_id: '$DATASET_ID'});
+    db.getSiblingDB('llm_refinery').jobs.deleteMany({});
+  " > /dev/null 2>&1
+
+  green "Cleaned up test data from MinIO and MongoDB"
+fi
+
+echo ""
+
 # --- Summary ---
 echo "========================================="
 echo " Results: $PASS passed, $FAIL failed"

@@ -6,6 +6,7 @@ __pycache__/
 
 # Environment
 .env
+env/
 
 # Build outputs
 frontend/dist/
@@ -31,3 +32,4 @@ Thumbs.db
 *.tmp
 *.log
 /tmp/
+download_dataset.py

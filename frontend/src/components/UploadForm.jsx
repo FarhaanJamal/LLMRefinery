@@ -2,9 +2,9 @@ import { useState } from "react";
 import { uploadDataset, startExperiment } from "../api/client";
 
 const MODELS = [
+  "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
   "meta-llama/Meta-Llama-3-8B",
   "mistralai/Mistral-7B-v0.1",
-  "microsoft/phi-2",
   "google/gemma-7b",
 ];
 
