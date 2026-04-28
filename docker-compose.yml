@@ -60,6 +60,18 @@ services:
       --port 5000
     restart: unless-stopped
 
+  flower:
+    image: mher/flower:2.0
+    container_name: llm-refinery-flower
+    ports:
+      - "5555:5555"
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      FLOWER_UNAUTHENTICATED_API: "true"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
   backend:
     build:
       context: ./backend

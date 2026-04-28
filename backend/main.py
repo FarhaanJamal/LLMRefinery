@@ -45,6 +45,10 @@ class ExperimentRequest(BaseModel):
     dataset_path: str
 
 
+class JobStatusUpdate(BaseModel):
+    status: str
+
+
 # --------------- Endpoints ---------------
 
 
@@ -124,6 +128,19 @@ async def start_experiment(request: ExperimentRequest):
     })
 
     return {"job_id": job_id, "status": "queued"}
+
+
+@app.patch("/api/job/{job_id}/status")
+async def update_job_status(job_id: str, body: JobStatusUpdate):
+    if body.status not in ("running", "completed", "failed"):
+        raise HTTPException(status_code=400, detail="Invalid status.")
+    result = db.jobs.update_one(
+        {"job_id": job_id},
+        {"$set": {"status": body.status}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return {"job_id": job_id, "status": body.status}
 
 
 @app.get("/api/experiments/results")
