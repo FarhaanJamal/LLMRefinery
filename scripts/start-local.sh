@@ -8,7 +8,7 @@ echo "=== LLM Refinery Local Control Plane Starting ==="
 
 # 1. Docker services
 echo "[1/4] Starting Docker services..."
-docker compose up -d
+docker compose up -d --build
 echo "  Docker services up"
 
 # 2. Tailscale

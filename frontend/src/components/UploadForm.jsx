@@ -14,6 +14,7 @@ export default function UploadForm() {
   const [r, setR] = useState(16);
   const [alpha, setAlpha] = useState(32);
   const [quantType, setQuantType] = useState("awq");
+  const [evalMode, setEvalMode] = useState("quick");
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
 
@@ -29,7 +30,7 @@ export default function UploadForm() {
       const experimentRes = await startExperiment({
         model,
         task: "qlora",
-        params: { r, alpha, quant_type: quantType },
+        params: { r, alpha, quant_type: quantType, eval_mode: evalMode },
         dataset_path: uploadRes.s3_path,
       });
       setStatus({
@@ -118,8 +119,22 @@ export default function UploadForm() {
           className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-2 text-sm text-white"
         >
           <option value="awq">AWQ (4-bit)</option>
-          <option value="gptq">GPTQ (4-bit)</option>
           <option value="none">None (FP16)</option>
+        </select>
+      </div>
+
+      {/* Eval Mode */}
+      <div>
+        <label className="block text-sm font-medium text-gray-300 mb-1">
+          Evaluation Mode
+        </label>
+        <select
+          value={evalMode}
+          onChange={(e) => setEvalMode(e.target.value)}
+          className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-2 text-sm text-white"
+        >
+          <option value="quick">Quick (ROUGE-L only)</option>
+          <option value="full">Full (ROUGE-L + MMLU benchmarks)</option>
         </select>
       </div>
 

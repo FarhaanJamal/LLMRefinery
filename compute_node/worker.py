@@ -1,10 +1,17 @@
+import cuda_setup  # noqa: F401 — must be first to pre-load CUDA 13 libs
 import os
-import random
-import time
+import shutil
+import traceback
 
 import mlflow
 import requests
 from celery import Celery
+
+import peft_train
+import quantize
+import evaluate
+from services.minio_client import download_dataset
+from services.dataset_utils import load_and_split
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:16379/0")
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:15000")
@@ -31,48 +38,105 @@ def _update_job_status(job_id: str, status: str):
 @app.task(name="compute.run_pipeline")
 def run_pipeline(payload):
     """
-    Full pipeline: fine-tune → quantize → evaluate.
-    Stub implementation — real ML logic added in Phase 3.
+    Full pipeline: download dataset → fine-tune → quantize → evaluate → log to MLflow.
     """
     job_id = payload["job_id"]
-    model = payload["model"]
-    task = payload.get("task", "qlora")
+    model_name = payload["model"]
     params = payload["params"]
     dataset_path = payload["dataset_path"]
 
     _update_job_status(job_id, "running")
 
-    print(f"[STUB] Pipeline started: job_id={job_id}")
-    print(f"[STUB] Model: {model}, Task: {task}")
-    print(f"[STUB] Params: {params}")
-    print(f"[STUB] Dataset: {dataset_path}")
+    print(f"[Pipeline] Started: job_id={job_id}")
+    print(f"[Pipeline] Model: {model_name}, Params: {params}")
+    print(f"[Pipeline] Dataset: {dataset_path}")
 
-    # --- Log to MLflow ---
     experiment_name = "llm-refinery"
     mlflow.set_experiment(experiment_name)
 
-    with mlflow.start_run(run_name=f"job-{job_id[:8]}"):
-        # Log params
-        mlflow.log_param("job_id", job_id)
-        mlflow.log_param("model", model)
-        mlflow.log_param("quantization_type", params.get("quant_type", "none"))
-        mlflow.log_param("lora_rank", params.get("r", 16))
-        mlflow.log_param("lora_alpha", params.get("alpha", 32))
-        mlflow.log_param("model_artifact_path", f"/workspace/models/{job_id}")
+    try:
+        # Start MLflow run NOW so duration tracks the full pipeline
+        with mlflow.start_run(run_name=f"job-{job_id[:8]}"):
+            # Log params upfront
+            mlflow.log_param("job_id", job_id)
+            mlflow.log_param("model", model_name)
+            mlflow.log_param("quantization_type", params.get("quant_type", "none"))
+            mlflow.log_param("lora_rank", params.get("r", 16))
+            mlflow.log_param("lora_alpha", params.get("alpha", 32))
+            mlflow.log_param("eval_mode", params.get("eval_mode", "quick"))
 
-        # Phase 3: Replace with actual calls
-        # 1. peft_train.run(payload)
-        # 2. quantize.run(payload)
-        # 3. evaluate.run(payload)
+            # --- 1. Download dataset from MinIO ---
+            print("[Pipeline] Step 1/4: Downloading dataset...")
+            local_dataset_path = download_dataset(dataset_path, job_id)
 
-        # Stub metrics (random values for Pareto chart testing)
-        mlflow.log_metric("eval_accuracy_score", round(random.uniform(0.60, 0.95), 4))
-        mlflow.log_metric("inference_latency", round(random.uniform(5.0, 50.0), 2))
-        mlflow.log_metric("vram_max_allocated", round(random.uniform(8.0, 22.0), 2))
-        quant = params.get("quant_type", "none")
-        mlflow.log_metric("compression_ratio", round(random.uniform(2.0, 4.0), 2) if quant != "none" else 1.0)
-        mlflow.log_metric("time_to_train", round(random.uniform(60.0, 600.0), 1))
+            # --- 2. Load & split dataset ---
+            print("[Pipeline] Step 2/4: Loading and splitting dataset...")
+            train_ds, test_ds = load_and_split(local_dataset_path)
 
-    print(f"[STUB] Pipeline complete: job_id={job_id}")
-    _update_job_status(job_id, "completed")
-    return {"job_id": job_id, "status": "completed"}
+            # --- 3. Fine-tune (QLoRA) ---
+            print("[Pipeline] Step 3/4: Fine-tuning...")
+            train_result = peft_train.run(payload, train_ds)
+            merged_path = train_result["merged_path"]
+            peft_time = train_result["time_to_train"]
+
+            # --- 4. Quantize ---
+            print("[Pipeline] Step 4/4: Quantizing...")
+            quant_result = quantize.run(payload, merged_path, train_dataset=train_ds)
+            model_path = quant_result["model_path"]
+            compression_ratio = quant_result["compression_ratio"]
+            quantize_time = quant_result["quantize_time"]
+
+            total_train_time = peft_time + quantize_time
+
+            # --- 5. Evaluate ---
+            print("[Pipeline] Evaluating...")
+            metrics = evaluate.run(
+                payload=payload,
+                model_path=model_path,
+                test_dataset=test_ds,
+                compression_ratio=compression_ratio,
+                time_to_train=total_train_time,
+            )
+
+            # --- 6. Log results to MLflow ---
+            print("[Pipeline] Logging results to MLflow...")
+            mlflow.log_param("model_artifact_path", model_path)
+
+            # System/training params (not model quality metrics)
+            mlflow.log_param("time_to_train", round(total_train_time, 1))
+            mlflow.log_param("compression_ratio", compression_ratio)
+
+            # Model quality metrics
+            mlflow.log_metric("eval_accuracy_score", metrics["eval_accuracy_score"])
+            mlflow.log_metric("inference_latency", metrics["inference_latency"])
+            mlflow.log_metric("vram_max_allocated", metrics["vram_max_allocated"])
+
+            # Full eval benchmarks (if present)
+            for key, value in metrics.items():
+                if key.startswith("mmlu_"):
+                    mlflow.log_metric(key, value)
+
+        # --- 7. Cleanup temp dataset ---
+        tmp_dir = f"/tmp/llm-refinery/{job_id}"
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir)
+
+        print(f"[Pipeline] Complete: job_id={job_id}")
+        _update_job_status(job_id, "completed")
+        return {"job_id": job_id, "status": "completed", "metrics": metrics}
+
+    except Exception as e:
+        error_msg = traceback.format_exc()
+        print(f"[Pipeline] FAILED: job_id={job_id}\n{error_msg}")
+
+        # Log failure to MLflow
+        try:
+            with mlflow.start_run(run_name=f"job-{job_id[:8]}-FAILED"):
+                mlflow.log_param("job_id", job_id)
+                mlflow.log_param("model", model_name)
+                mlflow.log_param("error", str(e)[:250])
+        except Exception:
+            pass
+
+        _update_job_status(job_id, "failed")
+        return {"job_id": job_id, "status": "failed", "error": str(e)}

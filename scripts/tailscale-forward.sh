@@ -29,7 +29,7 @@ sleep 1
 
 for entry in "${PORTS[@]}"; do
   IFS=':' read -r name ext_port int_port <<< "$entry"
-  socat TCP-LISTEN:${ext_port},bind=${TAILSCALE_IP},reuseaddr,fork TCP:127.0.0.1:${int_port} &
+  socat TCP-LISTEN:${ext_port},bind=${TAILSCALE_IP},reuseaddr,fork TCP:127.0.0.1:${int_port} 2>/dev/null &
   echo "  ${name}: ${TAILSCALE_IP}:${ext_port} → 127.0.0.1:${int_port} (PID $!)"
 done
 

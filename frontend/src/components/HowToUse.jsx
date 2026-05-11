@@ -20,7 +20,8 @@ export default function HowToUse() {
             <li><span className="text-white">Base Model</span> — choose an open-source LLM (e.g. Llama 3 8B)</li>
             <li><span className="text-white">LoRA Rank (r)</span> — adapter size (higher = more capacity, more VRAM)</li>
             <li><span className="text-white">LoRA Alpha</span> — scaling factor (typically 2x rank)</li>
-            <li><span className="text-white">Quantization</span> — AWQ or GPTQ for 4-bit compression, or None for full FP16</li>
+            <li><span className="text-white">Quantization</span> — AWQ for 4-bit compression, or None for full FP16</li>
+            <li><span className="text-white">Eval Mode</span> — Quick (ROUGE-L on test split) or Full (adds MMLU medical benchmarks)</li>
           </ul>
         </section>
 

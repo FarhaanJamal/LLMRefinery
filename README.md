@@ -33,6 +33,8 @@ An automated LLM fine-tuning, quantization, and evaluation platform optimized fo
 
 #### 1. Local Control Plane (WSL2)
 
+update the pod IP in `.env` first, then:
+
 ```bash
 # One command does everything: Docker services, firewall, socat forwarders
 bash scripts/start-local.sh
@@ -56,22 +58,16 @@ bash /workspace/start.sh
 If setting up a fresh pod:
 
 ```bash
-# 1. Install Tailscale
-curl -fsSL https://tailscale.com/install.sh | sh
-
-# 2. Copy compute_node from local
+# 1. Copy compute_node from local
 scp -P <PORT> -i ~/.ssh/id_runpod -r /mnt/c/WSL/llm-refinery/compute_node/ root@<HOST>:/workspace/compute_node/
 
-# 3. Copy config files
+# 2. Copy config files
 scp -P <PORT> -i ~/.ssh/id_runpod /mnt/c/WSL/llm-refinery/compute_node/config.env root@<HOST>:/workspace/config.env
 scp -P <PORT> -i ~/.ssh/id_runpod /mnt/c/WSL/llm-refinery/compute_node/start.sh root@<HOST>:/workspace/start.sh
 
-# 4. Install Python deps
-cd /workspace/compute_node && pip install -r requirements.txt
+# 3. Update auth key in /workspace/start.sh (get from https://login.tailscale.com/admin/settings/keys)
 
-# 5. Update auth key in /workspace/start.sh (get from https://login.tailscale.com/admin/settings/keys)
-
-# 6. Run start.sh
+# 4. Run start.sh
 bash /workspace/start.sh
 ```
 
@@ -125,7 +121,7 @@ The pod can't directly reach Docker containers on the local machine. Socat port 
 ## Pipeline (per job)
 
 ```
-Upload .jsonl → Queue Job → Fine-tune (QLoRA) → Quantize (AWQ/GPTQ/None) → Evaluate → Log to MLflow
+Upload .jsonl → Queue Job → Fine-tune (QLoRA) → Quantize (AWQ/None) → Evaluate → Log to MLflow
 ```
 
 ## Project Structure

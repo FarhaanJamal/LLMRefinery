@@ -35,7 +35,8 @@ db = mongo_client.get_default_database()
 class ExperimentParams(BaseModel):
     r: int = 16
     alpha: int = 32
-    quant_type: str = "awq"  # "awq", "gptq", or "none"
+    quant_type: str = "awq"  # "awq" or "none"
+    eval_mode: str = "quick"  # "quick" or "full"
 
 
 class ExperimentRequest(BaseModel):
@@ -96,8 +97,10 @@ async def upload_dataset(file: UploadFile = File(...)):
 @app.post("/api/experiment/start")
 async def start_experiment(request: ExperimentRequest):
     # Validate quant_type
-    if request.params.quant_type not in ("awq", "gptq", "none"):
-        raise HTTPException(status_code=400, detail="quant_type must be 'awq', 'gptq', or 'none'.")
+    if request.params.quant_type not in ("awq", "none"):
+        raise HTTPException(status_code=400, detail="quant_type must be 'awq' or 'none'.")
+    if request.params.eval_mode not in ("quick", "full"):
+        raise HTTPException(status_code=400, detail="eval_mode must be 'quick' or 'full'.")
 
     job_id = str(uuid.uuid4())
 
@@ -109,6 +112,7 @@ async def start_experiment(request: ExperimentRequest):
             "r": request.params.r,
             "alpha": request.params.alpha,
             "quant_type": request.params.quant_type,
+            "eval_mode": request.params.eval_mode,
         },
         "dataset_path": request.dataset_path,
     }

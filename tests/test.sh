@@ -234,7 +234,7 @@ if [[ "$LOCAL_ONLY" != "true" ]]; then
 
   JOB_RESP=$(curl -s --max-time 10 -X POST "$API/api/experiment/start" \
     -H "Content-Type: application/json" \
-    -d '{"model":"test/e2e-model","task":"qlora","params":{"r":8,"alpha":16,"quant_type":"gptq"},"dataset_path":"s3://datasets/test.jsonl"}' 2>/dev/null)
+    -d '{"model":"test/e2e-model","task":"qlora","params":{"r":8,"alpha":16,"quant_type":"awq","eval_mode":"quick"},"dataset_path":"s3://datasets/test.jsonl"}' 2>/dev/null)
 
   E2E_JOB_ID=$(echo "$JOB_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('job_id',''))" 2>/dev/null || echo "")
   E2E_STATUS=$(echo "$JOB_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
