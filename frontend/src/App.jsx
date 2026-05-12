@@ -42,7 +42,7 @@ function App() {
           <ParetoChart onSelectExperiment={setSelectedExperiment} />
         )}
         {activeTab === "Chat" && (
-          <ChatInterface experiment={selectedExperiment} />
+          <ChatInterface />
         )}
         {activeTab === "How to Use" && <HowToUse />}
       </main>

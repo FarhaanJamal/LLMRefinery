@@ -4,6 +4,12 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# Load .env as single source of truth for GPU_POD_IP
+set -a
+source .env
+set +a
+
 echo "=== LLM Refinery Local Control Plane Starting ==="
 
 # 1. Docker services
@@ -23,7 +29,7 @@ fi
 
 # 3. Firewall rule for pod
 echo "[3/4] Adding iptables rule for pod..."
-POD_IP="${GPU_POD_IP:-100.127.171.76}"
+POD_IP="${GPU_POD_IP:?GPU_POD_IP not set in .env}"
 sudo iptables -C ts-input -s "${POD_IP}" -j ACCEPT 2>/dev/null \
   || sudo iptables -I ts-input 2 -s "${POD_IP}" -j ACCEPT
 echo "  Allowing traffic from ${POD_IP}"

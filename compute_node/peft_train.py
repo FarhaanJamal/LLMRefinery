@@ -2,8 +2,6 @@
 QLoRA fine-tuning: load base model in 4-bit, inject LoRA adapter,
 train with SFTTrainer, save adapter, merge into base, cleanup VRAM.
 """
-import cuda_setup  # noqa: F401 — must be first to pre-load CUDA 13 libs
-
 import gc
 import os
 import time
@@ -177,6 +175,7 @@ def run(payload: dict, train_dataset: Dataset) -> dict:
 # Run on pod: cd /workspace/compute_node && python peft_train.py
 if __name__ == "__main__":
     from services.dataset_utils import load_and_split
+    import cuda_setup  # noqa: F401 — must be first to pre-load CUDA 13 libs
     
     # Use a tiny model for testing
     train_ds, test_ds = load_and_split(os.path.join(os.path.dirname(__file__), "tmp", "test.jsonl"))

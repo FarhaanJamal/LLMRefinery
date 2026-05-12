@@ -2,15 +2,25 @@
 Evaluation: quick eval (ROUGE-L on test split + latency) and
 optional full eval (lm-evaluation-harness benchmarks).
 """
-import cuda_setup  # noqa: F401 — must be first to pre-load CUDA 13 libs
-
 import gc
 import time
 
+import json
 import torch
 from datasets import Dataset
 from rouge_score import rouge_scorer
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+def _is_awq_model(model_path: str) -> bool:
+    """Check if the model at model_path is AWQ-quantized."""
+    config_path = f"{model_path}/config.json"
+    try:
+        with open(config_path) as f:
+            cfg = json.load(f)
+        return "quantization_config" in cfg and cfg["quantization_config"].get("quant_method") == "awq"
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
 
 
 def _load_model_and_tokenizer(model_path: str):
@@ -19,12 +29,22 @@ def _load_model_and_tokenizer(model_path: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        device_map="auto",
-        dtype=torch.float16,
-        trust_remote_code=True,
-    )
+    if _is_awq_model(model_path):
+        # Load AWQ models via autoawq directly — transformers' AWQ path
+        # unconditionally requires gptqmodel which we don't want.
+        from awq import AutoAWQForCausalLM
+        awq_model = AutoAWQForCausalLM.from_quantized(
+            model_path, fuse_layers=False, device_map="auto",
+        )
+        model = awq_model.model  # unwrap to standard transformers model
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            device_map="auto",
+            dtype=torch.float16,
+            trust_remote_code=True,
+        )
+
     model.eval()
     return model, tokenizer
 
@@ -187,6 +207,7 @@ def run(
 if __name__ == "__main__":
     import os
     from services.dataset_utils import load_and_split
+    import cuda_setup  # noqa: F401 — must be first to pre-load CUDA 13 libs
 
     # Load test split from the same dataset used for training
     _, test_ds = load_and_split(os.path.join(os.path.dirname(__file__), "tmp", "test.jsonl"))

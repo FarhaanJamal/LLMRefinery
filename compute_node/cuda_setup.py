@@ -21,12 +21,3 @@ if _CUDA13_LIB_DIR.exists():
             ctypes.CDLL(str(so_file), mode=ctypes.RTLD_GLOBAL)
         except OSError:
             pass
-
-# --- gptqmodel 7.0.0 compatibility shim for peft ---
-# peft 0.19.1 imports AwqGEMMQuantLinear but gptqmodel 7.0.0 renamed it to AwqGEMMLinear
-try:
-    import gptqmodel.nn_modules.qlinear.gemm_awq as _awq_mod
-    if not hasattr(_awq_mod, "AwqGEMMQuantLinear") and hasattr(_awq_mod, "AwqGEMMLinear"):
-        _awq_mod.AwqGEMMQuantLinear = _awq_mod.AwqGEMMLinear
-except ImportError:
-    pass

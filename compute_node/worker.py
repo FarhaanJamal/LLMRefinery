@@ -10,6 +10,7 @@ from celery import Celery
 import peft_train
 import quantize
 import evaluate
+import serve
 from services.minio_client import download_dataset
 from services.dataset_utils import load_and_split
 
@@ -45,7 +46,7 @@ def run_pipeline(payload):
     params = payload["params"]
     dataset_path = payload["dataset_path"]
 
-    _update_job_status(job_id, "running")
+    _update_job_status(job_id, "training")
 
     print(f"[Pipeline] Started: job_id={job_id}")
     print(f"[Pipeline] Model: {model_name}, Params: {params}")
@@ -140,3 +141,55 @@ def run_pipeline(payload):
 
         _update_job_status(job_id, "failed")
         return {"job_id": job_id, "status": "failed", "error": str(e)}
+
+
+def _update_deploy_status(run_id: str, status: str):
+    """Notify backend of deployment status change."""
+    try:
+        requests.patch(
+            f"{BACKEND_URL}/api/job/{run_id}/deploy-status",
+            json={"status": status},
+            timeout=5,
+        )
+    except Exception as e:
+        print(f"[WARN] Failed to update deploy status: {e}")
+
+
+@app.task(name="compute.deploy_model")
+def deploy_model(payload):
+    """
+    Deploy a trained model via vLLM.
+    payload: { run_id, model_path, quant_type }
+    """
+    run_id = payload["run_id"]
+    model_path = payload["model_path"]
+    quant_type = payload.get("quant_type", "none")
+
+    print(f"[Deploy] Starting vLLM for run_id={run_id}")
+    print(f"[Deploy] Model path: {model_path}, quant: {quant_type}")
+
+    try:
+        serve.start_serving(model_path, quant_type)
+        print(f"[Deploy] vLLM is healthy for run_id={run_id}")
+        _update_deploy_status(run_id, "running")
+        return {"run_id": run_id, "status": "running"}
+    except Exception as e:
+        error_msg = traceback.format_exc()
+        print(f"[Deploy] FAILED: run_id={run_id}\n{error_msg}")
+        _update_deploy_status(run_id, "failed")
+        return {"run_id": run_id, "status": "failed", "error": str(e)}
+
+
+@app.task(name="compute.undeploy_model")
+def undeploy_model(payload):
+    """
+    Stop the running vLLM server.
+    payload: { run_id }
+    """
+    run_id = payload["run_id"]
+
+    print(f"[Undeploy] Stopping vLLM for run_id={run_id}")
+    serve.stop_serving()
+    _update_deploy_status(run_id, "stopped")
+    print(f"[Undeploy] Stopped for run_id={run_id}")
+    return {"run_id": run_id, "status": "stopped"}

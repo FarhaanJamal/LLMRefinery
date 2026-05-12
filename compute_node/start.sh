@@ -5,16 +5,13 @@ set -euo pipefail
 
 echo "=== LLM Refinery GPU Pod Starting ==="
 
-# 0a. Set LD_LIBRARY_PATH for CUDA 13 libs (required by PyTorch/bitsandbytes)
-export LD_LIBRARY_PATH="/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}"
-
 # 0. Install system deps (don't survive pod restarts)
 echo "[0/5] Checking system dependencies..."
 if ! command -v socat &>/dev/null || ! command -v redis-cli &>/dev/null; then
   apt-get update -qq && apt-get install -y -qq socat redis-tools > /dev/null 2>&1
   echo "  Installed socat + redis-tools"
 else
-  echo "  Already installed"
+  echo "  Already socat + redis-tools are installed"
 fi
 
 if ! command -v tailscale &>/dev/null; then
@@ -23,7 +20,8 @@ if ! command -v tailscale &>/dev/null; then
 fi
 
 if ! command -v celery &>/dev/null; then
-  pip install -q --ignore-installed --root-user-action=ignore -r /workspace/compute_node/requirements.txt 2>&1 | grep -v "dependency resolver\|WARNING.*root"
+  pip install -q --root-user-action=ignore torch==2.11.0 2>&1 | tail -1 || true
+  pip install -q --no-build-isolation --root-user-action=ignore -r /workspace/compute_node/requirements.txt 2>&1 | tail -1 || true
   echo "  Installed Python dependencies"
 fi
 

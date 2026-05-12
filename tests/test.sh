@@ -295,6 +295,84 @@ print(match[0]['run_id'] if match else '')
 
   echo ""
 
+  # --- 13. Deploy Model ---
+  echo "--- Deploy Model ---"
+
+  if [[ -n "$MLFLOW_RUN_ID" ]]; then
+    DEPLOY_RES=$(curl -s --max-time 10 -X POST "$API/api/models/deploy" \
+      -H "Content-Type: application/json" \
+      -d "{\"run_id\": \"$MLFLOW_RUN_ID\"}" 2>/dev/null)
+    DEPLOY_STATUS=$(echo "$DEPLOY_RES" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+    check $([[ "$DEPLOY_STATUS" == "deploying" ]] && echo 0 || echo 1) "Deploy request accepted (status=$DEPLOY_STATUS)"
+
+    # Wait for vLLM to become healthy (up to 180s)
+    echo "  Waiting for vLLM to start (up to 180s)..."
+    DEPLOYED=false
+    for i in $(seq 1 36); do
+      sleep 5
+      SRV_STATUS=$(curl -s --max-time 5 "$API/api/models/serving-status" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+      echo "  [$((i*5))s] Serving status: $SRV_STATUS"
+      if [[ "$SRV_STATUS" == "running" ]]; then
+        DEPLOYED=true
+        break
+      elif [[ "$SRV_STATUS" == "failed" ]]; then
+        break
+      fi
+    done
+
+    check $([[ "$DEPLOYED" == "true" ]] && echo 0 || echo 1) "vLLM serving model"
+
+    echo ""
+
+    # --- 14. Chat Completions ---
+    echo "--- Chat Completions ---"
+
+    if [[ "$DEPLOYED" == "true" ]]; then
+      CHAT_RES=$(curl -s --max-time 30 -X POST "$API/api/chat/completions" \
+        -H "Content-Type: application/json" \
+        -d '{"messages":[{"role":"user","content":"What is a fracture?"}],"max_tokens":64,"temperature":0.1,"stream":false}' 2>/dev/null)
+
+      CHAT_CONTENT=$(echo "$CHAT_RES" | python3 -c "
+import sys,json
+data = json.load(sys.stdin)
+content = data.get('choices',[{}])[0].get('message',{}).get('content','')
+print(content[:80] if content else '')
+" 2>/dev/null || echo "")
+
+      check $([[ -n "$CHAT_CONTENT" ]] && echo 0 || echo 1) "Chat returned content: ${CHAT_CONTENT:-<empty>}"
+    else
+      red "Skipping chat test — model not deployed"
+      FAIL=$((FAIL + 1))
+    fi
+
+    echo ""
+
+    # --- 15. Undeploy Model ---
+    echo "--- Undeploy Model ---"
+
+    if [[ "$DEPLOYED" == "true" ]]; then
+      UNDEPLOY_RES=$(curl -s --max-time 10 -X DELETE "$API/api/models/deploy" 2>/dev/null)
+      UNDEPLOY_STATUS=$(echo "$UNDEPLOY_RES" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+      check $([[ "$UNDEPLOY_STATUS" == "stopping" ]] && echo 0 || echo 1) "Undeploy request accepted (status=$UNDEPLOY_STATUS)"
+
+      # Wait for stop
+      for i in $(seq 1 6); do
+        sleep 3
+        SRV_STATUS=$(curl -s --max-time 5 "$API/api/models/serving-status" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+        if [[ "$SRV_STATUS" == "none" || "$SRV_STATUS" == "stopped" ]]; then
+          break
+        fi
+      done
+      check $([[ "$SRV_STATUS" == "none" || "$SRV_STATUS" == "stopped" ]] && echo 0 || echo 1) "Model undeployed (status=$SRV_STATUS)"
+    fi
+
+    echo ""
+  else
+    red "Skipping deploy/chat tests — no MLflow run_id"
+    FAIL=$((FAIL + 1))
+    echo ""
+  fi
+
   # --- E2E Cleanup ---
   echo "--- E2E Cleanup ---"
 
@@ -303,6 +381,9 @@ print(match[0]['run_id'] if match else '')
       "db.getSiblingDB('llm_refinery').jobs.deleteOne({job_id: '$E2E_JOB_ID'})" > /dev/null 2>&1
 
     if [[ -n "$MLFLOW_RUN_ID" ]]; then
+      docker exec llm-refinery-mongodb mongosh --quiet --eval \
+        "db.getSiblingDB('llm_refinery').deployments.deleteOne({run_id: '$MLFLOW_RUN_ID'})" > /dev/null 2>&1
+
       curl -s --max-time 5 -X POST "http://localhost:5000/api/2.0/mlflow/runs/delete" \
         -H "Content-Type: application/json" \
         -d "{\"run_id\": \"$MLFLOW_RUN_ID\"}" > /dev/null 2>&1

@@ -2,7 +2,6 @@
 Quantization: AWQ on the merged model.
 If quant_type=="none", skips quantization and uses merged FP16 as-is.
 """
-import cuda_setup  # noqa: F401 — must be first to pre-load CUDA 13 libs
 
 import gc
 import os
@@ -136,6 +135,8 @@ def run(payload: dict, merged_path: str, train_dataset=None) -> dict:
 
 # Run on pod: cd /workspace/compute_node && python quantize.py
 if __name__ == "__main__":
+    import cuda_setup  # noqa: F401 — must be first to pre-load CUDA 13 libs
+    
     # Expects a merged model from peft_train.py at this path
     merged_path = os.path.join(MODEL_OUTPUT_DIR, "test-001", "merged")
 
