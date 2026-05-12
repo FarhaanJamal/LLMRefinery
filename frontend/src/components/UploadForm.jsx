@@ -1,5 +1,7 @@
-import { useState } from "react";
-import { uploadDataset, startExperiment } from "../api/client";
+import { useState, useEffect, useCallback } from "react";
+import { uploadDataset, startExperiment, getJobStatus, getActiveJobs } from "../api/client";
+
+const STORAGE_KEY = "llm-refinery-active-jobs";
 
 const MODELS = [
   "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
@@ -7,6 +9,90 @@ const MODELS = [
   "mistralai/Mistral-7B-v0.1",
   "google/gemma-7b",
 ];
+
+const ALL_STEPS = [
+  { key: "queued",      label: "Queued" },
+  { key: "training",    label: "Training" },
+  { key: "quantizing",  label: "Quantizing" },
+  { key: "evaluating",  label: "Evaluating" },
+  { key: "completed",   label: "Done" },
+];
+
+function getSteps(quantType) {
+  if (quantType === "none") {
+    return ALL_STEPS.filter((s) => s.key !== "quantizing");
+  }
+  return ALL_STEPS;
+}
+
+function JobTracker({ jobId, onDismiss }) {
+  const [job, setJob] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    async function poll() {
+      try {
+        const data = await getJobStatus(jobId);
+        if (active) setJob(data);
+      } catch { /* ignore */ }
+    }
+    poll();
+    const id = setInterval(poll, 4000);
+    return () => { active = false; clearInterval(id); };
+  }, [jobId]);
+
+  const status = job?.status || "queued";
+  const isFailed = status === "failed";
+  const isDone = status === "completed";
+  const quantType = job?.params?.quant_type || "awq";
+  const steps = getSteps(quantType);
+  const currentIdx = steps.findIndex((s) => s.key === status);
+
+  return (
+    <div className="mt-5 rounded border border-gray-600 bg-gray-800 p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-gray-300">
+          Job <span className="font-mono text-white">{jobId.slice(0, 8)}</span>
+        </p>
+        <button onClick={onDismiss} className="text-xs text-gray-500 hover:text-white" title="Dismiss">✕</button>
+      </div>
+
+      {/* Step progress */}
+      <div className="flex items-center gap-1">
+        {steps.map((step, i) => {
+          const done = i < currentIdx || isDone;
+          const active = i === currentIdx && !isDone && !isFailed;
+          return (
+            <div key={step.key} className="flex-1 flex flex-col items-center gap-1">
+              <div
+                className={`h-2 w-full rounded-full transition-colors ${
+                  done
+                    ? "bg-green-500"
+                    : active
+                      ? "bg-indigo-500 animate-pulse"
+                      : isFailed && i === currentIdx
+                        ? "bg-red-500"
+                        : "bg-gray-600"
+                }`}
+              />
+              <span className={`text-[10px] ${done ? "text-green-400" : active ? "text-indigo-300" : "text-gray-500"}`}>
+                {step.label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {isFailed && (
+        <p className="text-red-400 text-xs">Job failed. Check logs for details.</p>
+      )}
+
+      {isDone && (
+        <p className="text-green-400 text-xs">Pipeline complete — check Results tab.</p>
+      )}
+    </div>
+  );
+}
 
 export default function UploadForm() {
   const [file, setFile] = useState(null);
@@ -17,6 +103,40 @@ export default function UploadForm() {
   const [evalMode, setEvalMode] = useState("quick");
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [activeJobs, setActiveJobs] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+    } catch { return []; }
+  });
+
+  // Persist to localStorage whenever activeJobs changes
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(activeJobs));
+  }, [activeJobs]);
+
+  // On mount, also fetch any active jobs from backend (handles other tabs / cleared storage)
+  useEffect(() => {
+    async function loadActive() {
+      try {
+        const jobs = await getActiveJobs();
+        if (jobs.length > 0) {
+          setActiveJobs((prev) => {
+            const existing = new Set(prev);
+            const merged = [...prev];
+            for (const j of jobs) {
+              if (!existing.has(j.job_id)) merged.push(j.job_id);
+            }
+            return merged;
+          });
+        }
+      } catch { /* ignore */ }
+    }
+    loadActive();
+  }, []);
+
+  const dismissJob = useCallback((jobId) => {
+    setActiveJobs((prev) => prev.filter((id) => id !== jobId));
+  }, []);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -33,10 +153,7 @@ export default function UploadForm() {
         params: { r, alpha, quant_type: quantType, eval_mode: evalMode },
         dataset_path: uploadRes.s3_path,
       });
-      setStatus({
-        type: "success",
-        msg: `Job queued! ID: ${experimentRes.job_id} (${uploadRes.row_count} rows uploaded)`,
-      });
+      setActiveJobs((prev) => [experimentRes.job_id, ...prev]);
     } catch (err) {
       setStatus({
         type: "error",
@@ -160,6 +277,15 @@ export default function UploadForm() {
           {status.msg}
         </div>
       )}
+
+      {/* Active job trackers */}
+      {activeJobs.map((jobId) => (
+        <JobTracker
+          key={jobId}
+          jobId={jobId}
+          onDismiss={() => dismissJob(jobId)}
+        />
+      ))}
     </form>
   );
 }

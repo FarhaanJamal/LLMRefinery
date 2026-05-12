@@ -11,8 +11,9 @@ from pymongo import MongoClient
 import httpx
 import os
 
-from services.minio_client import upload_fileobj
+from services.minio_client import upload_fileobj, delete_file
 from services.redis_client import send_job
+import mlflow
 from services.mlflow_client import get_all_results
 
 # --------------- App Setup ---------------
@@ -151,8 +152,9 @@ async def start_experiment(request: ExperimentRequest):
 
 @app.patch("/api/job/{job_id}/status")
 async def update_job_status(job_id: str, body: JobStatusUpdate):
-    if body.status not in ("running", "completed", "failed"):
-        raise HTTPException(status_code=400, detail="Invalid status.")
+    valid = ("running", "training", "quantizing", "evaluating", "completed", "failed")
+    if body.status not in valid:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid}")
     result = db.jobs.update_one(
         {"job_id": job_id},
         {"$set": {"status": body.status}},
@@ -162,10 +164,71 @@ async def update_job_status(job_id: str, body: JobStatusUpdate):
     return {"job_id": job_id, "status": body.status}
 
 
+@app.get("/api/job/{job_id}")
+async def get_job_status(job_id: str):
+    job = db.jobs.find_one({"job_id": job_id}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if "created_at" in job:
+        job["created_at"] = job["created_at"].isoformat()
+    return job
+
+
+@app.get("/api/jobs/active")
+async def get_active_jobs():
+    """Return all jobs that are not in a terminal state."""
+    jobs = list(db.jobs.find(
+        {"status": {"$in": ["queued", "running", "training", "quantizing", "evaluating"]}},
+        {"_id": 0},
+    ).sort("created_at", -1).limit(20))
+    for job in jobs:
+        if "created_at" in job:
+            job["created_at"] = job["created_at"].isoformat()
+    return {"jobs": jobs}
+
+
 @app.get("/api/experiments/results")
 async def get_experiment_results():
     results = get_all_results()
     return {"experiments": results}
+
+
+@app.delete("/api/experiments/{run_id}")
+async def delete_experiment(run_id: str):
+    """Delete an experiment run from MLflow, its dataset from MinIO, and all MongoDB records."""
+    # Find the job_id and dataset_path from MLflow
+    all_results = get_all_results()
+    match = next((r for r in all_results if r["run_id"] == run_id), None)
+
+    # Delete from MLflow
+    try:
+        client = mlflow.tracking.MlflowClient()
+        client.delete_run(run_id)
+    except Exception:
+        pass
+
+    if match:
+        job_id = match.get("job_id", "")
+
+        # Find the dataset s3_path from the job record
+        job = db.jobs.find_one({"job_id": job_id})
+        if job:
+            ds_path = job.get("dataset_path", "")
+            # ds_path is like "s3://datasets/uuid.jsonl" — extract object name
+            if ds_path.startswith("s3://"):
+                object_name = ds_path.split("/", 3)[-1]  # "uuid.jsonl"
+                delete_file(object_name)
+
+            # Delete the dataset metadata from MongoDB
+            dataset_id = ds_path.rsplit("/", 1)[-1].replace(".jsonl", "") if ds_path else ""
+            if dataset_id:
+                db.datasets.delete_many({"dataset_id": dataset_id})
+
+        # Delete job and deployment records
+        db.jobs.delete_many({"job_id": job_id})
+        db.deployments.delete_many({"run_id": run_id})
+
+    return {"run_id": run_id, "deleted": True}
 
 
 # --------------- Deployment Endpoints ---------------
@@ -286,11 +349,13 @@ async def chat_completions(request: dict):
                     ) as resp:
                         if resp.status_code != 200:
                             body = await resp.aread()
-                            yield f"data: {body.decode()}\n\n"
+                            print(f"[Chat] vLLM returned {resp.status_code}: {body.decode()}")
+                            yield f"data: {{\"error\": \"vLLM error {resp.status_code}: {body.decode()[:200]}\"}}\n\n"
                             return
-                        async for chunk in resp.aiter_bytes():
+                        async for chunk in resp.aiter_text():
                             yield chunk
             except Exception as e:
+                print(f"[Chat] Streaming error: {e}")
                 yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")

@@ -20,8 +20,7 @@ if ! command -v tailscale &>/dev/null; then
 fi
 
 if ! command -v celery &>/dev/null; then
-  pip install -q --root-user-action=ignore torch==2.11.0 2>&1 | tail -1 || true
-  pip install -q --no-build-isolation --root-user-action=ignore -r /workspace/compute_node/requirements.txt 2>&1 | tail -1 || true
+  pip install --root-user-action=ignore --ignore-installed -r /workspace/compute_node/requirements.txt 2>&1
   echo "  Installed Python dependencies"
 fi
 

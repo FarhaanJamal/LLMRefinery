@@ -42,24 +42,38 @@ export default function ChatInterface() {
     try {
       // Stream response from vLLM via backend proxy
       const body = await chatCompletions(history, { stream: true });
+      if (!body) throw new Error("No response body — streaming not supported.");
       const reader = body.getReader();
       const decoder = new TextDecoder();
 
       let assistantContent = "";
+      let sseBuffer = "";
       setMessages([...history, { role: "assistant", content: "" }]);
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const text = decoder.decode(value, { stream: true });
-        // Parse SSE lines: "data: {...}\n\n"
-        const lines = text.split("\n").filter((l) => l.startsWith("data: "));
-        for (const line of lines) {
+        sseBuffer += decoder.decode(value, { stream: true });
+        // Split on double-newline to get complete SSE events
+        const events = sseBuffer.split("\n");
+        sseBuffer = events.pop(); // keep incomplete trailing data
+
+        for (const line of events) {
+          if (!line.startsWith("data: ")) continue;
           const payload = line.slice(6).trim();
-          if (payload === "[DONE]") break;
+          if (payload === "[DONE]") continue;
           try {
             const parsed = JSON.parse(payload);
+            if (parsed.error) {
+              assistantContent = `Error: ${parsed.error}`;
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = { role: "assistant", content: assistantContent };
+                return updated;
+              });
+              break;
+            }
             const delta = parsed.choices?.[0]?.delta?.content || "";
             assistantContent += delta;
             setMessages((prev) => {
@@ -69,6 +83,15 @@ export default function ChatInterface() {
             });
           } catch { /* skip malformed chunk */ }
         }
+      }
+
+      // If no content received at all, show an error
+      if (!assistantContent) {
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[updated.length - 1] = { role: "assistant", content: "No response received from model." };
+          return updated;
+        });
       }
     } catch (err) {
       setMessages((prev) => [

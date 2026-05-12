@@ -82,6 +82,7 @@ def run_pipeline(payload):
 
             # --- 4. Quantize ---
             print("[Pipeline] Step 4/4: Quantizing...")
+            _update_job_status(job_id, "quantizing")
             quant_result = quantize.run(payload, merged_path, train_dataset=train_ds)
             model_path = quant_result["model_path"]
             compression_ratio = quant_result["compression_ratio"]
@@ -91,6 +92,7 @@ def run_pipeline(payload):
 
             # --- 5. Evaluate ---
             print("[Pipeline] Evaluating...")
+            _update_job_status(job_id, "evaluating")
             metrics = evaluate.run(
                 payload=payload,
                 model_path=model_path,

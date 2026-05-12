@@ -34,3 +34,10 @@ def upload_fileobj(data, length: int, object_name: str, content_type: str = "app
 
 def download_file(object_name: str, file_path: str):
     client.fget_object(MINIO_BUCKET, object_name, file_path)
+
+
+def delete_file(object_name: str):
+    try:
+        client.remove_object(MINIO_BUCKET, object_name)
+    except S3Error:
+        pass  # object may not exist

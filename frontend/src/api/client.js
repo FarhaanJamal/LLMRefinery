@@ -16,9 +16,24 @@ export async function startExperiment(config) {
   return res.data;
 }
 
+export async function getJobStatus(jobId) {
+  const res = await api.get(`/job/${jobId}`);
+  return res.data;
+}
+
+export async function getActiveJobs() {
+  const res = await api.get("/jobs/active");
+  return res.data.jobs;
+}
+
 export async function getResults() {
   const res = await api.get("/experiments/results");
   return res.data.experiments;
+}
+
+export async function deleteExperiment(runId) {
+  const res = await api.delete(`/experiments/${runId}`);
+  return res.data;
 }
 
 export async function deployModel(runId) {
