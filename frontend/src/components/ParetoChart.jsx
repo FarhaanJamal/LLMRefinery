@@ -9,7 +9,7 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
-import { getResults, getServingStatus, deployModel, undeployModel, deleteExperiment } from "../api/client";
+import { getResults, getServingStatus, deployModel, undeployModel, deleteExperiment, subscribeEvents } from "../api/client";
 
 /* ---- Axis options ---- */
 const AXIS_OPTIONS = [
@@ -119,7 +119,7 @@ export default function ParetoChart({ onSelectExperiment }) {
 
   useEffect(() => {
     let active = true;
-    async function poll() {
+    async function fetchAll() {
       try {
         const [results, status] = await Promise.all([getResults(), getServingStatus()]);
         if (active) { setData(results); setServing(status); setError(null); }
@@ -127,9 +127,21 @@ export default function ParetoChart({ onSelectExperiment }) {
         if (active) setError("Failed to fetch results.");
       }
     }
-    poll();
-    const id = setInterval(poll, 10000);
-    return () => { active = false; clearInterval(id); };
+    fetchAll();
+
+    // SSE-driven updates
+    const es = subscribeEvents((event) => {
+      if (!active) return;
+      if (event.type === "job_status" && event.status === "completed") {
+        fetchAll();
+      } else if (event.type === "deploy_status") {
+        getServingStatus().then((s) => { if (active) setServing(s); }).catch(() => {});
+      }
+    });
+
+    // Fallback poll every 30s
+    const fallback = setInterval(fetchAll, 30000);
+    return () => { active = false; es.close(); clearInterval(fallback); };
   }, []);
 
   async function handleDeploy(runId) {

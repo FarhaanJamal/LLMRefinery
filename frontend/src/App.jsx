@@ -35,15 +35,17 @@ function App() {
         ))}
       </nav>
 
-      {/* Content */}
+      {/* Content — all tabs stay mounted so SSE listeners remain active */}
       <main className="px-6 py-8">
-        {activeTab === "Upload" && <UploadForm />}
-        {activeTab === "Results" && (
+        <div style={{ display: activeTab === "Upload" ? undefined : "none" }}>
+          <UploadForm />
+        </div>
+        <div style={{ display: activeTab === "Results" ? undefined : "none" }}>
           <ParetoChart onSelectExperiment={setSelectedExperiment} />
-        )}
-        {activeTab === "Chat" && (
+        </div>
+        <div style={{ display: activeTab === "Chat" ? undefined : "none" }}>
           <ChatInterface />
-        )}
+        </div>
         {activeTab === "How to Use" && <HowToUse />}
       </main>
     </div>

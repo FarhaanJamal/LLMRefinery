@@ -51,6 +51,16 @@ export async function getServingStatus() {
   return res.data;
 }
 
+export function subscribeEvents(onEvent) {
+  const es = new EventSource("http://localhost:8080/api/events");
+  es.onmessage = (e) => {
+    try {
+      onEvent(JSON.parse(e.data));
+    } catch { /* ignore parse errors */ }
+  };
+  return es;
+}
+
 export async function chatCompletions(messages, { stream = false, maxTokens = 512, temperature = 0.7 } = {}) {
   if (!stream) {
     const res = await api.post("/chat/completions", {

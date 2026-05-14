@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { uploadDataset, startExperiment, getJobStatus, getActiveJobs } from "../api/client";
+import { uploadDataset, startExperiment, getJobStatus, getActiveJobs, subscribeEvents } from "../api/client";
 
 const STORAGE_KEY = "llm-refinery-active-jobs";
 
@@ -30,15 +30,24 @@ function JobTracker({ jobId, onDismiss }) {
 
   useEffect(() => {
     let active = true;
-    async function poll() {
-      try {
-        const data = await getJobStatus(jobId);
-        if (active) setJob(data);
-      } catch { /* ignore */ }
-    }
-    poll();
-    const id = setInterval(poll, 4000);
-    return () => { active = false; clearInterval(id); };
+
+    // Initial fetch
+    getJobStatus(jobId).then((data) => { if (active) setJob(data); }).catch(() => {});
+
+    // SSE-driven updates
+    const es = subscribeEvents((event) => {
+      if (event.type === "job_status" && event.job_id === jobId) {
+        // Re-fetch full job data on status change
+        getJobStatus(jobId).then((data) => { if (active) setJob(data); }).catch(() => {});
+      }
+    });
+
+    // Fallback poll every 30s in case SSE drops
+    const fallback = setInterval(() => {
+      getJobStatus(jobId).then((data) => { if (active) setJob(data); }).catch(() => {});
+    }, 30000);
+
+    return () => { active = false; es.close(); clearInterval(fallback); };
   }, [jobId]);
 
   const status = job?.status || "queued";
@@ -113,6 +122,16 @@ export default function UploadForm() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(activeJobs));
   }, [activeJobs]);
+
+  // Remove progress bar when experiment is deleted from Results tab
+  useEffect(() => {
+    const es = subscribeEvents((event) => {
+      if (event.type === "job_deleted" && event.job_id) {
+        setActiveJobs((prev) => prev.filter((id) => id !== event.job_id));
+      }
+    });
+    return () => es.close();
+  }, []);
 
   // On mount, also fetch any active jobs from backend (handles other tabs / cleared storage)
   useEffect(() => {

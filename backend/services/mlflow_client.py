@@ -5,6 +5,34 @@ MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
 
+def get_run_info(run_id: str) -> dict | None:
+    """Fetch a single run by ID. Returns None if not found."""
+    client = mlflow.tracking.MlflowClient()
+    try:
+        run = client.get_run(run_id)
+    except Exception:
+        return None
+    data = run.data
+    quant_type = data.params.get("quantization_type", "none")
+    return {
+        "run_id": run.info.run_id,
+        "job_id": data.params.get("job_id", ""),
+        "model": data.params.get("model", ""),
+        "quantization_type": quant_type,
+        "model_artifact_path": data.params.get("model_artifact_path", ""),
+    }
+
+
+def count_runs_for_job(job_id: str) -> int:
+    """Count how many active (non-deleted) MLflow runs share this job_id."""
+    client = mlflow.tracking.MlflowClient()
+    runs = client.search_runs(
+        experiment_ids=[e.experiment_id for e in client.search_experiments()],
+        filter_string=f"params.job_id = '{job_id}'",
+    )
+    return len(runs)
+
+
 def get_all_results() -> list[dict]:
     client = mlflow.tracking.MlflowClient()
     experiments = client.search_experiments()

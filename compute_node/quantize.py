@@ -69,14 +69,14 @@ def _prepare_calib_data(train_dataset, tokenizer, n_samples=128) -> list[str]:
     return calib_texts
 
 
-def run(payload: dict, merged_path: str, train_dataset=None) -> dict:
+def run(payload: dict, merged_path: str, calib_data: list[str] = None) -> dict:
     """
     Quantize the merged model (or skip if quant_type=="none").
 
     Args:
         payload: job config with params.quant_type
         merged_path: path to the merged FP16 model from peft_train
-        train_dataset: optional HuggingFace Dataset for calibration
+        calib_data: optional list of calibration text strings for AWQ
 
     Returns:
         {
@@ -105,12 +105,7 @@ def run(payload: dict, merged_path: str, train_dataset=None) -> dict:
     print(f"[Quantize] Starting {quant_type.upper()} quantization...")
     start_time = time.time()
 
-    # Prepare calibration data from training dataset
-    calib_data = None
-    if train_dataset is not None:
-        from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(merged_path)
-        calib_data = _prepare_calib_data(train_dataset, tokenizer)
+    if calib_data:
         print(f"[Quantize] Using {len(calib_data)} samples from training data for calibration")
 
     if quant_type == "awq":

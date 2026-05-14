@@ -10,6 +10,17 @@ from pathlib import Path
 import torch
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+
+# Workaround: PEFT bug — is_gptqmodel_available() raises PackageNotFoundError
+# instead of returning False when gptqmodel is not installed.
+# Patch every peft submodule that already imported the broken function.
+import sys
+import peft.import_utils as _peft_imp
+_peft_imp.is_gptqmodel_available = lambda: False
+for _mod in sys.modules.values():
+    if getattr(_mod, "__name__", "").startswith("peft.") and hasattr(_mod, "is_gptqmodel_available"):
+        _mod.is_gptqmodel_available = lambda: False
+
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -28,13 +39,14 @@ def _formatting_func(example, tokenizer):
     return text
 
 
-def run(payload: dict, train_dataset: Dataset) -> dict:
+def run(payload: dict, train_dataset: Dataset, tokenizer=None) -> dict:
     """
     QLoRA fine-tune a model on the training dataset.
 
     Args:
         payload: job config with model, params, job_id
         train_dataset: HuggingFace Dataset with "messages" column
+        tokenizer: optional pre-loaded tokenizer (avoids redundant loads)
 
     Returns:
         {
@@ -59,11 +71,15 @@ def run(payload: dict, train_dataset: Dataset) -> dict:
     print(f"[Train] LoRA r={lora_r}, alpha={lora_alpha}, samples={len(train_dataset)}")
     start_time = time.time()
 
+    # If tokenizer was passed in, model files are already cached — skip HF HEAD requests
+    use_local = tokenizer is not None
+
     # --- 1. Load tokenizer ---
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "right"
 
     # --- 2. Load model in 4-bit ---
     bnb_config = BitsAndBytesConfig(
@@ -88,6 +104,7 @@ def run(payload: dict, train_dataset: Dataset) -> dict:
         device_map="auto",
         trust_remote_code=True,
         attn_implementation=attn_impl,
+        local_files_only=use_local,
     )
     model = prepare_model_for_kbit_training(model)
 
@@ -152,6 +169,7 @@ def run(payload: dict, train_dataset: Dataset) -> dict:
         dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
+        local_files_only=True,
     )
     merged_model = PeftModel.from_pretrained(base_model, str(adapter_path))
     merged_model = merged_model.merge_and_unload()

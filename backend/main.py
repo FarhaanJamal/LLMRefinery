@@ -1,9 +1,10 @@
+import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -14,7 +15,7 @@ import os
 from services.minio_client import upload_fileobj, delete_file
 from services.redis_client import send_job
 import mlflow
-from services.mlflow_client import get_all_results
+from services.mlflow_client import get_all_results, get_run_info, count_runs_for_job
 
 # --------------- App Setup ---------------
 
@@ -31,6 +32,20 @@ app.add_middleware(
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongodb:27017/llm_refinery")
 mongo_client = MongoClient(MONGO_URL)
 db = mongo_client.get_default_database()
+
+# --------------- SSE Event Bus ---------------
+
+_sse_subscribers: list[asyncio.Queue] = []
+
+
+def _broadcast_event(event_type: str, data: dict):
+    """Push an event to all connected SSE clients."""
+    payload = json.dumps({"type": event_type, **data})
+    for q in list(_sse_subscribers):
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            pass  # slow client — drop event
 
 # --------------- Schemas ---------------
 
@@ -92,16 +107,28 @@ async def upload_dataset(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail=f"Line {i + 1} is not a JSON object.")
         row_count += 1
 
+    # Dedup: if same filename + size already exists, reuse it
+    file_size = len(contents)
+    existing = db.datasets.find_one({"filename": file.filename, "file_size": file_size})
+    if existing:
+        print(f"[Upload] Dedup hit: {file.filename} ({file_size} bytes) → {existing['s3_path']}")
+        return {
+            "dataset_id": existing["dataset_id"],
+            "s3_path": existing["s3_path"],
+            "row_count": existing["row_count"],
+        }
+
     # Upload to MinIO
     dataset_id = str(uuid.uuid4())
     object_name = f"{dataset_id}.jsonl"
     data = BytesIO(contents)
-    s3_path = upload_fileobj(data, len(contents), object_name, content_type="application/jsonl")
+    s3_path = upload_fileobj(data, file_size, object_name, content_type="application/jsonl")
 
     # Save metadata to MongoDB
     db.datasets.insert_one({
         "dataset_id": dataset_id,
         "filename": file.filename,
+        "file_size": file_size,
         "row_count": row_count,
         "s3_path": s3_path,
         "uploaded_at": datetime.now(timezone.utc),
@@ -161,6 +188,7 @@ async def update_job_status(job_id: str, body: JobStatusUpdate):
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Job not found.")
+    _broadcast_event("job_status", {"job_id": job_id, "status": body.status})
     return {"job_id": job_id, "status": body.status}
 
 
@@ -196,9 +224,8 @@ async def get_experiment_results():
 @app.delete("/api/experiments/{run_id}")
 async def delete_experiment(run_id: str):
     """Delete an experiment run from MLflow, its dataset from MinIO, and all MongoDB records."""
-    # Find the job_id and dataset_path from MLflow
-    all_results = get_all_results()
-    match = next((r for r in all_results if r["run_id"] == run_id), None)
+    # Direct lookup instead of fetching all results
+    run_info = get_run_info(run_id)
 
     # Delete from MLflow
     try:
@@ -207,25 +234,45 @@ async def delete_experiment(run_id: str):
     except Exception:
         pass
 
-    if match:
-        job_id = match.get("job_id", "")
+    if run_info:
+        job_id = run_info.get("job_id", "")
+        model_artifact_path = run_info.get("model_artifact_path", "")
 
-        # Find the dataset s3_path from the job record
-        job = db.jobs.find_one({"job_id": job_id})
-        if job:
-            ds_path = job.get("dataset_path", "")
-            # ds_path is like "s3://datasets/uuid.jsonl" — extract object name
-            if ds_path.startswith("s3://"):
-                object_name = ds_path.split("/", 3)[-1]  # "uuid.jsonl"
-                delete_file(object_name)
+        # Check if sibling runs still exist for this job_id
+        remaining = count_runs_for_job(job_id) if job_id else 0
+        is_last_run = remaining == 0
 
-            # Delete the dataset metadata from MongoDB
-            dataset_id = ds_path.rsplit("/", 1)[-1].replace(".jsonl", "") if ds_path else ""
-            if dataset_id:
-                db.datasets.delete_many({"dataset_id": dataset_id})
+        if is_last_run:
+            # Last run for this job — full cleanup
+            job = db.jobs.find_one({"job_id": job_id})
+            if job:
+                ds_path = job.get("dataset_path", "")
+                if ds_path.startswith("s3://"):
+                    other_jobs = db.jobs.count_documents({
+                        "dataset_path": ds_path,
+                        "job_id": {"$ne": job_id},
+                    })
+                    if other_jobs == 0:
+                        object_name = ds_path.split("/", 3)[-1]
+                        delete_file(object_name)
+                        dataset_id = ds_path.rsplit("/", 1)[-1].replace(".jsonl", "")
+                        if dataset_id:
+                            db.datasets.delete_many({"dataset_id": dataset_id})
 
-        # Delete job and deployment records
-        db.jobs.delete_many({"job_id": job_id})
+            # Delete entire model artifact directory on the GPU pod
+            if job_id:
+                send_job("compute.cleanup_artifacts", {"job_id": job_id})
+
+            db.jobs.delete_many({"job_id": job_id})
+            _broadcast_event("job_deleted", {"job_id": job_id})
+        else:
+            # Sibling runs remain — only delete this run's specific artifact subdir
+            if model_artifact_path:
+                send_job("compute.cleanup_artifacts", {
+                    "job_id": job_id,
+                    "subdir": model_artifact_path,
+                })
+
         db.deployments.delete_many({"run_id": run_id})
 
     return {"run_id": run_id, "deleted": True}
@@ -237,9 +284,8 @@ async def delete_experiment(run_id: str):
 @app.post("/api/models/deploy")
 async def deploy_model(body: DeployRequest):
     """Deploy a trained model via vLLM on the GPU pod."""
-    # Look up model info from MLflow
-    results = get_all_results()
-    run = next((r for r in results if r["run_id"] == body.run_id), None)
+    # Direct lookup instead of fetching all results
+    run = get_run_info(body.run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found in MLflow.")
     if not run.get("model_artifact_path"):
@@ -321,7 +367,32 @@ async def update_deploy_status(run_id: str, body: DeployStatusUpdate):
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Deployment not found.")
+    _broadcast_event("deploy_status", {"run_id": run_id, "status": body.status})
     return {"run_id": run_id, "status": body.status}
+
+
+@app.get("/api/events")
+async def sse_events(request: Request):
+    """Server-Sent Events stream for real-time updates."""
+    queue: asyncio.Queue = asyncio.Queue(maxsize=64)
+    _sse_subscribers.append(queue)
+
+    async def event_generator():
+        try:
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"data: {payload}\n\n"
+                except asyncio.TimeoutError:
+                    # Heartbeat to keep connection alive
+                    yield ": heartbeat\n\n"
+        finally:
+            _sse_subscribers.remove(queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.post("/api/chat/completions")
