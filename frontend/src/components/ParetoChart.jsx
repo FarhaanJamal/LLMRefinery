@@ -32,8 +32,9 @@ function CustomTooltip({ active, payload }) {
       <p className="font-semibold text-white">{d.model?.split("/").pop()}</p>
       <p>Accuracy: {d.accuracy?.toFixed(3)}</p>
       <p>Latency: {d.latency?.toFixed(1)} tok/s</p>
-      <p>Quant: {d.quantization_type || "none"}</p>
+      <p>Quant: {d.quantization_type || "none"}{d.w_bit ? ` (${d.w_bit}-bit)` : ""}</p>
       <p>LoRA r={d.lora_rank} α={d.lora_alpha}</p>
+      <p>Steps: {d.max_steps} | LR: {d.learning_rate}</p>
       <p>Compression: {d.compression_ratio?.toFixed(2)}x</p>
       <p>VRAM: {d.vram_max_allocated?.toFixed(3)} GB</p>
     </div>
@@ -49,6 +50,15 @@ const COMPARE_FIELDS = [
   { key: "compression_ratio",  label: "Compression",  fmt: (v) => `${v?.toFixed(2)}x` },
   { key: "lora_rank",          label: "LoRA rank",    fmt: (v) => v },
   { key: "lora_alpha",         label: "LoRA alpha",   fmt: (v) => v },
+  { key: "lora_dropout",       label: "LoRA dropout", fmt: (v) => v },
+  { key: "num_train_epochs",   label: "Epochs",       fmt: (v) => (v && Number(v) > 0) ? v : "—" },
+  { key: "max_steps",          label: "Max steps",    fmt: (v) => v },
+  { key: "learning_rate",      label: "Learning rate",fmt: (v) => v },
+  { key: "batch_size",         label: "Batch size",   fmt: (v) => v },
+  { key: "lr_scheduler_type",  label: "LR scheduler", fmt: (v) => v },
+  { key: "max_seq_length",     label: "Max seq len",  fmt: (v) => v },
+  { key: "w_bit",              label: "Quant bits",   fmt: (v) => v ? `${v}-bit` : "—" },
+  { key: "q_group_size",       label: "Group size",   fmt: (v) => v || "—" },
   { key: "time_to_train",      label: "Train time",   fmt: (v) => `${v?.toFixed(0)}s` },
   { key: "vram_max_allocated", label: "VRAM peak",    fmt: (v) => `${v?.toFixed(3)} GB` },
   { key: "eval_mode",          label: "Eval mode",    fmt: (v) => v },

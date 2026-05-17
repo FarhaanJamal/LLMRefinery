@@ -51,10 +51,29 @@ def _broadcast_event(event_type: str, data: dict):
 
 
 class ExperimentParams(BaseModel):
+    # LoRA
     r: int = 16
     alpha: int = 32
+    lora_dropout: float = 0.05
+    target_modules: str = "all-linear"  # "all-linear" or "q_proj,v_proj"
+    # Training
+    num_train_epochs: int = -1  # -1 = use max_steps instead
+    max_steps: int = 500  # -1 = use num_train_epochs instead
+    learning_rate: float = 2e-4
+    per_device_train_batch_size: int = 2
+    gradient_accumulation_steps: int = 4
+    lr_scheduler_type: str = "cosine"  # "cosine", "linear", "constant"
+    warmup_steps: int = 10
+    max_grad_norm: float = 0.3
+    seed: int = 42
+    max_seq_length: int = 512
+    # Quantization
     quant_type: str = "awq"  # "awq" or "none"
+    w_bit: int = 4  # 4 or 8
+    q_group_size: int = 128  # 32, 64, or 128
+    # Evaluation
     eval_mode: str = "quick"  # "quick" or "full"
+    max_new_tokens: int = 256  # 128, 256, or 512
 
 
 class ExperimentRequest(BaseModel):
@@ -151,12 +170,7 @@ async def start_experiment(request: ExperimentRequest):
         "job_id": job_id,
         "model": request.model,
         "task": request.task,
-        "params": {
-            "r": request.params.r,
-            "alpha": request.params.alpha,
-            "quant_type": request.params.quant_type,
-            "eval_mode": request.params.eval_mode,
-        },
+        "params": request.params.model_dump(),
         "dataset_path": request.dataset_path,
     }
 

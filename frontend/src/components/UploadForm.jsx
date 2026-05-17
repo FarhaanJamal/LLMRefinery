@@ -106,17 +106,52 @@ function JobTracker({ jobId, onDismiss }) {
 export default function UploadForm() {
   const [file, setFile] = useState(null);
   const [model, setModel] = useState(MODELS[0]);
+  // LoRA config
   const [r, setR] = useState(16);
   const [alpha, setAlpha] = useState(32);
+  const [loraDropout, setLoraDropout] = useState(0.05);
+  const [targetModules, setTargetModules] = useState("all-linear");
+  // Training config
+  const [numEpochs, setNumEpochs] = useState(-1);
+  const [maxSteps, setMaxSteps] = useState(500);
+
+  const handleEpochsChange = (val) => {
+    setNumEpochs(val);
+    if (val > 0) setMaxSteps(-1);
+  };
+  const handleMaxStepsChange = (val) => {
+    setMaxSteps(val);
+    if (val > 0) setNumEpochs(-1);
+  };
+
+  const [learningRate, setLearningRate] = useState(2e-4);
+  const [batchSize, setBatchSize] = useState(2);
+  const [gradAccum, setGradAccum] = useState(4);
+  const [lrScheduler, setLrScheduler] = useState("cosine");
+  const [warmupSteps, setWarmupSteps] = useState(10);
+  const [maxGradNorm, setMaxGradNorm] = useState(0.3);
+  const [seed, setSeed] = useState(42);
+  const [maxSeqLength, setMaxSeqLength] = useState(512);
+  // Quantization config
   const [quantType, setQuantType] = useState("awq");
+  const [wBit, setWBit] = useState(4);
+  const [qGroupSize, setQGroupSize] = useState(128);
+  // Evaluation config
   const [evalMode, setEvalMode] = useState("quick");
+  const [maxNewTokens, setMaxNewTokens] = useState(256);
+  // UI state
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [openSections, setOpenSections] = useState({});
   const [activeJobs, setActiveJobs] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
     } catch { return []; }
   });
+
+  const toggleSection = useCallback((key) => {
+    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
 
   // Persist to localStorage whenever activeJobs changes
   useEffect(() => {
@@ -169,7 +204,17 @@ export default function UploadForm() {
       const experimentRes = await startExperiment({
         model,
         task: "qlora",
-        params: { r, alpha, quant_type: quantType, eval_mode: evalMode },
+        params: {
+          r, alpha, lora_dropout: loraDropout, target_modules: targetModules,
+          num_train_epochs: numEpochs,
+          max_steps: maxSteps, learning_rate: learningRate,
+          per_device_train_batch_size: batchSize,
+          gradient_accumulation_steps: gradAccum,
+          lr_scheduler_type: lrScheduler, warmup_steps: warmupSteps,
+          max_grad_norm: maxGradNorm, seed, max_seq_length: maxSeqLength,
+          quant_type: quantType, w_bit: wBit, q_group_size: qGroupSize,
+          eval_mode: evalMode, max_new_tokens: maxNewTokens,
+        },
         dataset_path: uploadRes.s3_path,
       });
       setActiveJobs((prev) => [experimentRes.job_id, ...prev]);
@@ -216,63 +261,215 @@ export default function UploadForm() {
         </select>
       </div>
 
-      {/* LoRA Rank & Alpha */}
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">
-            LoRA Rank (r)
-          </label>
-          <input
-            type="number"
-            min={1}
-            value={r}
-            onChange={(e) => setR(Number(e.target.value))}
-            className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-2 text-sm text-white"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">
-            LoRA Alpha
-          </label>
-          <input
-            type="number"
-            min={1}
-            value={alpha}
-            onChange={(e) => setAlpha(Number(e.target.value))}
-            className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-2 text-sm text-white"
-          />
-        </div>
-      </div>
+      {/* ---- LoRA Config ---- */}
+      <fieldset className="rounded border border-gray-700 overflow-hidden">
+        <button type="button" onClick={() => toggleSection("lora")}
+          className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-800/80 text-sm font-medium text-gray-200 hover:bg-gray-700/80">
+          <span>LoRA Configuration</span>
+          <span className="text-gray-500 text-xs">{openSections.lora ? "▲" : "▼"}</span>
+        </button>
+        {openSections.lora && (
+          <div className="px-4 py-3 space-y-3 bg-gray-800/30">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Rank (r)</label>
+                <input type="number" min={1} value={r} onChange={(e) => setR(Number(e.target.value))}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Alpha</label>
+                <input type="number" min={1} value={alpha} onChange={(e) => setAlpha(Number(e.target.value))}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Dropout</label>
+                <input type="number" min={0} max={0.5} step={0.01} value={loraDropout}
+                  onChange={(e) => setLoraDropout(Number(e.target.value))}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Target Modules</label>
+                <select value={targetModules} onChange={(e) => setTargetModules(e.target.value)}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white">
+                  <option value="all-linear">all-linear</option>
+                  <option value="q_proj,v_proj">q_proj, v_proj</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        )}
+      </fieldset>
 
-      {/* Quantization */}
-      <div>
-        <label className="block text-sm font-medium text-gray-300 mb-1">
-          Quantization Type
-        </label>
-        <select
-          value={quantType}
-          onChange={(e) => setQuantType(e.target.value)}
-          className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-2 text-sm text-white"
-        >
-          <option value="awq">AWQ (4-bit)</option>
-          <option value="none">None (FP16)</option>
-        </select>
-      </div>
+      {/* ---- Training Config ---- */}
+      <fieldset className="rounded border border-gray-700 overflow-hidden">
+        <button type="button" onClick={() => toggleSection("training")}
+          className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-800/80 text-sm font-medium text-gray-200 hover:bg-gray-700/80">
+          <span>Training Configuration</span>
+          <span className="text-gray-500 text-xs">{openSections.training ? "▲" : "▼"}</span>
+        </button>
+        {openSections.training && (
+          <div className="px-4 py-3 space-y-3 bg-gray-800/30">
+            <div className="rounded bg-gray-700/40 px-3 py-2 text-[11px] text-gray-400">
+              Set <strong>Epochs</strong> to a positive value to train by epochs (Max Steps will be ignored).
+              Leave Epochs at -1 to train by Max Steps instead.
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Epochs</label>
+                <input type="number" min={-1} value={numEpochs} onChange={(e) => handleEpochsChange(Number(e.target.value))}
+                  className={`w-full rounded border px-3 py-1.5 text-sm text-white ${numEpochs > 0 ? "bg-gray-800 border-indigo-500" : "bg-gray-800 border-gray-600 opacity-60"}`} />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Max Steps</label>
+                <input type="number" min={-1} value={maxSteps} onChange={(e) => handleMaxStepsChange(Number(e.target.value))}
+                  className={`w-full rounded border px-3 py-1.5 text-sm text-white ${maxSteps > 0 ? "bg-gray-800 border-indigo-500" : "bg-gray-800 border-gray-600 opacity-60"}`} />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Learning Rate</label>
+                <input type="number" min={0} step={0.0001} value={learningRate}
+                  onChange={(e) => setLearningRate(Number(e.target.value))}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Batch Size per GPU</label>
+                <select value={batchSize} onChange={(e) => setBatchSize(Number(e.target.value))}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white">
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                  <option value={4}>4</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Gradient Accumulation</label>
+                <select value={gradAccum} onChange={(e) => setGradAccum(Number(e.target.value))}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white">
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                  <option value={4}>4</option>
+                  <option value={8}>8</option>
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">LR Scheduler</label>
+                <select value={lrScheduler} onChange={(e) => setLrScheduler(e.target.value)}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white">
+                  <option value="cosine">Cosine</option>
+                  <option value="linear">Linear</option>
+                  <option value="constant">Constant</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Warmup Steps</label>
+                <input type="number" min={0} value={warmupSteps} onChange={(e) => setWarmupSteps(Number(e.target.value))}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white" />
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Max Grad Norm</label>
+                <input type="number" min={0} step={0.1} value={maxGradNorm}
+                  onChange={(e) => setMaxGradNorm(Number(e.target.value))}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Seed</label>
+                <input type="number" min={0} value={seed} onChange={(e) => setSeed(Number(e.target.value))}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Max Seq Length</label>
+                <select value={maxSeqLength} onChange={(e) => setMaxSeqLength(Number(e.target.value))}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white">
+                  <option value={256}>256</option>
+                  <option value={512}>512</option>
+                  <option value={1024}>1024</option>
+                  <option value={2048}>2048</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        )}
+      </fieldset>
 
-      {/* Eval Mode */}
-      <div>
-        <label className="block text-sm font-medium text-gray-300 mb-1">
-          Evaluation Mode
-        </label>
-        <select
-          value={evalMode}
-          onChange={(e) => setEvalMode(e.target.value)}
-          className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-2 text-sm text-white"
-        >
-          <option value="quick">Quick (ROUGE-L only)</option>
-          <option value="full">Full (ROUGE-L + MMLU benchmarks)</option>
-        </select>
-      </div>
+      {/* ---- Quantization Config ---- */}
+      <fieldset className="rounded border border-gray-700 overflow-hidden">
+        <button type="button" onClick={() => toggleSection("quant")}
+          className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-800/80 text-sm font-medium text-gray-200 hover:bg-gray-700/80">
+          <span>Quantization Configuration</span>
+          <span className="text-gray-500 text-xs">{openSections.quant ? "▲" : "▼"}</span>
+        </button>
+        {openSections.quant && (
+          <div className="px-4 py-3 space-y-3 bg-gray-800/30">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Quantization Type</label>
+              <select value={quantType} onChange={(e) => setQuantType(e.target.value)}
+                className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white">
+                <option value="awq">AWQ</option>
+                <option value="none">None (FP16)</option>
+              </select>
+            </div>
+            {quantType === "awq" && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Weight Bits</label>
+                  <select value={wBit} onChange={(e) => setWBit(Number(e.target.value))}
+                    className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white">
+                    <option value={4}>4-bit</option>
+                    <option value={8}>8-bit</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Group Size</label>
+                  <select value={qGroupSize} onChange={(e) => setQGroupSize(Number(e.target.value))}
+                    className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white">
+                    <option value={32}>32</option>
+                    <option value={64}>64</option>
+                    <option value={128}>128</option>
+                  </select>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </fieldset>
+
+      {/* ---- Evaluation Config ---- */}
+      <fieldset className="rounded border border-gray-700 overflow-hidden">
+        <button type="button" onClick={() => toggleSection("eval")}
+          className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-800/80 text-sm font-medium text-gray-200 hover:bg-gray-700/80">
+          <span>Evaluation Configuration</span>
+          <span className="text-gray-500 text-xs">{openSections.eval ? "▲" : "▼"}</span>
+        </button>
+        {openSections.eval && (
+          <div className="px-4 py-3 space-y-3 bg-gray-800/30">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Evaluation Mode</label>
+                <select value={evalMode} onChange={(e) => setEvalMode(e.target.value)}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white">
+                  <option value="quick">Quick (ROUGE-L)</option>
+                  <option value="full">Full (ROUGE-L + MMLU)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Max New Tokens</label>
+                <select value={maxNewTokens} onChange={(e) => setMaxNewTokens(Number(e.target.value))}
+                  className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-white">
+                  <option value={128}>128</option>
+                  <option value={256}>256</option>
+                  <option value={512}>512</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        )}
+      </fieldset>
 
       {/* Submit */}
       <button

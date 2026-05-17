@@ -29,6 +29,17 @@ def _load_model_and_tokenizer(model_path: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # Base models lack a chat template — set a default
+    if not getattr(tokenizer, "chat_template", None):
+        tokenizer.chat_template = (
+            "{% for message in messages %}"
+            "### {{ message['role'] | capitalize }}:\n"
+            "{{ message['content'] }}"
+            "{% if not loop.last %}\n\n{% endif %}"
+            "{% endfor %}"
+            "{{ eos_token }}"
+        )
+
     if _is_awq_model(model_path):
         # Load AWQ models via autoawq directly — transformers' AWQ path
         # unconditionally requires gptqmodel which we don't want.
@@ -49,7 +60,31 @@ def _load_model_and_tokenizer(model_path: str):
     return model, tokenizer
 
 
-def _generate_response(model, tokenizer, messages: list[dict], max_new_tokens: int = 256) -> str:
+def _format_messages(messages: list[dict], tokenizer, add_generation_prompt: bool = False) -> str:
+    """Format chat messages using the tokenizer's chat template, with fallback for base models."""
+    if getattr(tokenizer, "chat_template", None):
+        return tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=add_generation_prompt
+        )
+    parts = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "system":
+            parts.append(f"### System:\n{content}")
+        elif role == "user":
+            parts.append(f"### User:\n{content}")
+        elif role == "assistant":
+            parts.append(f"### Assistant:\n{content}")
+    text = "\n\n".join(parts)
+    if add_generation_prompt:
+        text += "\n\n### Assistant:\n"
+    else:
+        text += tokenizer.eos_token
+    return text
+
+
+def _generate_response(model, tokenizer, messages: list[dict], max_new_tokens: int = 256, max_seq_length: int = 512) -> str:
     """Generate a response given chat messages (exclude the last assistant turn)."""
     # Build prompt from all messages except the last assistant response
     prompt_messages = []
@@ -58,11 +93,9 @@ def _generate_response(model, tokenizer, messages: list[dict], max_new_tokens: i
             break
         prompt_messages.append(msg)
 
-    prompt = tokenizer.apply_chat_template(
-        prompt_messages, tokenize=False, add_generation_prompt=True
-    )
+    prompt = _format_messages(prompt_messages, tokenizer, add_generation_prompt=True)
 
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_seq_length)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
@@ -79,7 +112,7 @@ def _generate_response(model, tokenizer, messages: list[dict], max_new_tokens: i
     return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
 
-def _quick_eval(model, tokenizer, test_dataset: Dataset) -> dict:
+def _quick_eval(model, tokenizer, test_dataset: Dataset, max_samples: int = 50, max_new_tokens: int = 256, max_seq_length: int = 512) -> dict:
     """
     Run inference on test split, compute ROUGE-L and latency.
     Returns dict of metrics.
@@ -91,12 +124,14 @@ def _quick_eval(model, tokenizer, test_dataset: Dataset) -> dict:
 
     torch.cuda.reset_peak_memory_stats()
 
-    for i, sample in enumerate(test_dataset):
+    n_samples = min(len(test_dataset), max_samples)
+    for i in range(n_samples):
+        sample = test_dataset[i]
         messages = sample["messages"]
         reference = sample["text_target"]
 
         start = time.time()
-        generated = _generate_response(model, tokenizer, messages)
+        generated = _generate_response(model, tokenizer, messages, max_new_tokens=max_new_tokens, max_seq_length=max_seq_length)
         elapsed = time.time() - start
 
         # Count generated tokens
@@ -174,13 +209,15 @@ def run(
     """
     job_id = payload["job_id"]
     eval_mode = payload.get("params", {}).get("eval_mode", "quick")
+    max_new_tokens = payload.get("params", {}).get("max_new_tokens", 256)
+    max_seq_length = payload.get("params", {}).get("max_seq_length", 512)
 
     print(f"[Eval] Starting evaluation: job_id={job_id}, mode={eval_mode}")
     print(f"[Eval] Model: {model_path}, test samples: {len(test_dataset)}")
 
     # --- Quick eval (always) ---
     model, tokenizer = _load_model_and_tokenizer(model_path)
-    metrics = _quick_eval(model, tokenizer, test_dataset)
+    metrics = _quick_eval(model, tokenizer, test_dataset, max_new_tokens=max_new_tokens, max_seq_length=max_seq_length)
 
     # Cleanup model before full eval (lm-eval loads its own)
     del model, tokenizer

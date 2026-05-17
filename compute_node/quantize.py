@@ -23,8 +23,8 @@ def _get_dir_size_gb(path: str) -> float:
     return total / (1024 ** 3)
 
 
-def _quantize_awq(merged_path: str, output_path: str, calib_data: list[str] = None) -> None:
-    """Quantize with AutoAWQ (4-bit, group_size=128)."""
+def _quantize_awq(merged_path: str, output_path: str, calib_data: list[str] = None, w_bit: int = 4, q_group_size: int = 128) -> None:
+    """Quantize with AutoAWQ."""
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
@@ -37,8 +37,8 @@ def _quantize_awq(merged_path: str, output_path: str, calib_data: list[str] = No
 
     quant_config = {
         "zero_point": True,
-        "q_group_size": 128,
-        "w_bit": 4,
+        "q_group_size": q_group_size,
+        "w_bit": w_bit,
         "version": "GEMM",
     }
 
@@ -62,9 +62,23 @@ def _prepare_calib_data(train_dataset, tokenizer, n_samples=128) -> list[str]:
     for i, example in enumerate(train_dataset):
         if i >= n_samples:
             break
-        text = tokenizer.apply_chat_template(
-            example["messages"], tokenize=False, add_generation_prompt=False
-        )
+        messages = example["messages"]
+        if getattr(tokenizer, "chat_template", None):
+            text = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=False
+            )
+        else:
+            parts = []
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role == "system":
+                    parts.append(f"### System:\n{content}")
+                elif role == "user":
+                    parts.append(f"### User:\n{content}")
+                elif role == "assistant":
+                    parts.append(f"### Assistant:\n{content}")
+            text = "\n\n".join(parts) + tokenizer.eos_token
         calib_texts.append(text)
     return calib_texts
 
@@ -87,6 +101,8 @@ def run(payload: dict, merged_path: str, calib_data: list[str] = None) -> dict:
     """
     job_id = payload["job_id"]
     quant_type = payload["params"].get("quant_type", "awq")
+    w_bit = payload["params"].get("w_bit", 4)
+    q_group_size = payload["params"].get("q_group_size", 128)
 
     output_dir = Path(MODEL_OUTPUT_DIR) / job_id
     quantized_path = output_dir / "quantized"
@@ -109,7 +125,7 @@ def run(payload: dict, merged_path: str, calib_data: list[str] = None) -> dict:
         print(f"[Quantize] Using {len(calib_data)} samples from training data for calibration")
 
     if quant_type == "awq":
-        _quantize_awq(merged_path, str(quantized_path), calib_data)
+        _quantize_awq(merged_path, str(quantized_path), calib_data, w_bit=w_bit, q_group_size=q_group_size)
     else:
         raise ValueError(f"Unknown quant_type: {quant_type}. Use 'awq' or 'none'.")
 

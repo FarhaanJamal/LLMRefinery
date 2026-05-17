@@ -33,10 +33,26 @@ MODEL_OUTPUT_DIR = os.getenv("MODEL_OUTPUT_DIR", "/workspace/models")
 
 def _formatting_func(example, tokenizer):
     """Format messages into a single training string using the model's chat template."""
-    text = tokenizer.apply_chat_template(
-        example["messages"], tokenize=False, add_generation_prompt=False
-    )
-    return text
+    messages = example["messages"]
+
+    # If the tokenizer has a chat template, use it
+    if getattr(tokenizer, "chat_template", None):
+        return tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False
+        )
+
+    # Fallback for base models without a chat template (e.g. Mistral-7B-v0.1, gemma-7b)
+    parts = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "system":
+            parts.append(f"### System:\n{content}")
+        elif role == "user":
+            parts.append(f"### User:\n{content}")
+        elif role == "assistant":
+            parts.append(f"### Assistant:\n{content}")
+    return "\n\n".join(parts) + tokenizer.eos_token
 
 
 def run(payload: dict, train_dataset: Dataset, tokenizer=None) -> dict:
@@ -60,6 +76,18 @@ def run(payload: dict, train_dataset: Dataset, tokenizer=None) -> dict:
     params = payload["params"]
     lora_r = params.get("r", 16)
     lora_alpha = params.get("alpha", 32)
+    lora_dropout = params.get("lora_dropout", 0.05)
+    target_modules = params.get("target_modules", "all-linear")
+    num_train_epochs = params.get("num_train_epochs", -1)
+    max_steps = params.get("max_steps", 500)
+    learning_rate = params.get("learning_rate", 2e-4)
+    per_device_train_batch_size = params.get("per_device_train_batch_size", 2)
+    gradient_accumulation_steps = params.get("gradient_accumulation_steps", 4)
+    lr_scheduler_type = params.get("lr_scheduler_type", "cosine")
+    warmup_steps = params.get("warmup_steps", 10)
+    max_grad_norm = params.get("max_grad_norm", 0.3)
+    seed = params.get("seed", 42)
+    max_seq_length = params.get("max_seq_length", 512)
 
     output_dir = Path(MODEL_OUTPUT_DIR) / job_id
     adapter_path = output_dir / "lora_adapter"
@@ -80,6 +108,17 @@ def run(payload: dict, train_dataset: Dataset, tokenizer=None) -> dict:
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = "right"
+
+        # Base models lack a chat template — set a default for TRL compatibility
+        if not getattr(tokenizer, "chat_template", None):
+            tokenizer.chat_template = (
+                "{% for message in messages %}"
+                "### {{ message['role'] | capitalize }}:\n"
+                "{{ message['content'] }}"
+                "{% if not loop.last %}\n\n{% endif %}"
+                "{% endfor %}"
+                "{{ eos_token }}"
+            )
 
     # --- 2. Load model in 4-bit ---
     bnb_config = BitsAndBytesConfig(
@@ -104,18 +143,22 @@ def run(payload: dict, train_dataset: Dataset, tokenizer=None) -> dict:
         device_map="auto",
         trust_remote_code=True,
         attn_implementation=attn_impl,
-        local_files_only=use_local,
     )
     model = prepare_model_for_kbit_training(model)
 
     # --- 3. Apply LoRA ---
+    # Parse target_modules: "all-linear" stays as string, comma-separated becomes list
+    parsed_target_modules = target_modules
+    if "," in target_modules:
+        parsed_target_modules = [m.strip() for m in target_modules.split(",")]
+
     lora_config = LoraConfig(
         r=lora_r,
         lora_alpha=lora_alpha,
-        lora_dropout=0.05,
+        lora_dropout=lora_dropout,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules="all-linear",
+        target_modules=parsed_target_modules,
     )
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
@@ -123,20 +166,21 @@ def run(payload: dict, train_dataset: Dataset, tokenizer=None) -> dict:
     # --- 4. Training arguments ---
     training_args = SFTConfig(
         output_dir=str(adapter_path),
-        num_train_epochs=3,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,
-        learning_rate=2e-4,
-        lr_scheduler_type="cosine",
-        warmup_steps=2,
+        num_train_epochs=num_train_epochs if num_train_epochs > 0 else 1,
+        max_steps=max_steps if num_train_epochs <= 0 else -1,
+        per_device_train_batch_size=per_device_train_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        learning_rate=learning_rate,
+        lr_scheduler_type=lr_scheduler_type,
+        warmup_steps=warmup_steps,
         optim="paged_adamw_8bit",
         bf16=True,
         logging_steps=10,
         save_strategy="no",
         report_to="none",
-        max_grad_norm=0.3,
-        seed=42,
-        max_length=512,
+        max_grad_norm=max_grad_norm,
+        seed=seed,
+        max_length=max_seq_length,
     )
 
     # --- 5. Train ---

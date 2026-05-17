@@ -37,15 +37,32 @@ def _update_job_status(job_id: str, status: str):
         print(f"[WARN] Failed to update job status: {e}")
 
 
+def _format_messages(messages: list[dict], tokenizer) -> str:
+    """Format chat messages using the tokenizer's chat template, with fallback for base models."""
+    if getattr(tokenizer, "chat_template", None):
+        return tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False
+        )
+    parts = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "system":
+            parts.append(f"### System:\n{content}")
+        elif role == "user":
+            parts.append(f"### User:\n{content}")
+        elif role == "assistant":
+            parts.append(f"### Assistant:\n{content}")
+    return "\n\n".join(parts) + tokenizer.eos_token
+
+
 def _prepare_calib_data(train_dataset, tokenizer, n_samples=128) -> list[str]:
     """Convert training dataset messages into calibration text strings."""
     calib_texts = []
     for i, example in enumerate(train_dataset):
         if i >= n_samples:
             break
-        text = tokenizer.apply_chat_template(
-            example["messages"], tokenize=False, add_generation_prompt=False
-        )
+        text = _format_messages(example["messages"], tokenizer)
         calib_texts.append(text)
     return calib_texts
 
@@ -68,7 +85,22 @@ def _log_mlflow_run(
         mlflow.log_param("quantization_type", quant_type_label)
         mlflow.log_param("lora_rank", params.get("r", 16))
         mlflow.log_param("lora_alpha", params.get("alpha", 32))
+        mlflow.log_param("lora_dropout", params.get("lora_dropout", 0.05))
+        mlflow.log_param("target_modules", params.get("target_modules", "all-linear"))
+        mlflow.log_param("num_train_epochs", params.get("num_train_epochs", -1))
+        mlflow.log_param("max_steps", params.get("max_steps", 500))
+        mlflow.log_param("learning_rate", params.get("learning_rate", 2e-4))
+        mlflow.log_param("batch_size", params.get("per_device_train_batch_size", 2))
+        mlflow.log_param("gradient_accumulation_steps", params.get("gradient_accumulation_steps", 4))
+        mlflow.log_param("lr_scheduler_type", params.get("lr_scheduler_type", "cosine"))
+        mlflow.log_param("warmup_steps", params.get("warmup_steps", 10))
+        mlflow.log_param("max_grad_norm", params.get("max_grad_norm", 0.3))
+        mlflow.log_param("seed", params.get("seed", 42))
+        mlflow.log_param("max_seq_length", params.get("max_seq_length", 512))
+        mlflow.log_param("w_bit", params.get("w_bit", 4))
+        mlflow.log_param("q_group_size", params.get("q_group_size", 128))
         mlflow.log_param("eval_mode", params.get("eval_mode", "quick"))
+        mlflow.log_param("max_new_tokens", params.get("max_new_tokens", 256))
         mlflow.log_param("model_artifact_path", model_path)
         mlflow.log_param("time_to_train", round(time_to_train, 1))
         mlflow.log_param("compression_ratio", compression_ratio)
@@ -117,6 +149,18 @@ def run_pipeline(payload):
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = "right"
+
+        # Base models (Mistral-7B-v0.1, gemma-7b) lack a chat template.
+        # Set a sensible default so TRL internals and apply_chat_template work.
+        if not getattr(tokenizer, "chat_template", None):
+            tokenizer.chat_template = (
+                "{% for message in messages %}"
+                "### {{ message['role'] | capitalize }}:\n"
+                "{{ message['content'] }}"
+                "{% if not loop.last %}\n\n{% endif %}"
+                "{% endfor %}"
+                "{{ eos_token }}"
+            )
 
         # --- 4. Fine-tune (QLoRA) ---
         print("[Pipeline] Step 3/4: Fine-tuning...")
