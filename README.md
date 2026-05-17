@@ -2,6 +2,11 @@
 
 An automated LLM fine-tuning, quantization, and evaluation platform optimized for a single RTX 3090 (24 GB VRAM). Decoupled architecture: local WSL2 control plane + remote GPU compute plane connected via Tailscale VPN.
 
+##Demo
+
+https://github.com/user-attachments/assets/b42cf485-ec6f-4f44-8479-2a8f03afe4a1
+
+
 ## Architecture
 
 ```
